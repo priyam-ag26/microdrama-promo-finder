@@ -1,0 +1,8 @@
+llm_cache/
+outputs/
+parsed_show.json
+pack/
+*.zip
+__pycache__/
+*.pyc
+.DS_Store
