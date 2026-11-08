@@ -332,8 +332,8 @@ with st.sidebar:
     api_key = own_key or (demo_key(provider) if has_demo else "")
 
     st.markdown(f'<div class="side-h"><span class="ic">{ICON["run"]}</span>Run settings</div>', unsafe_allow_html=True)
-    limit = st.number_input("Episodes to process", 0, 500, 5,
-                            help="0 processes every episode. Start with 5: free keys are rate-limited.")
+    limit = st.number_input("Episodes to process", 0, 500, 3,
+                            help="0 processes every episode. Start with 3: free keys are rate-limited.")
     pause = st.slider("Pause between calls (s)", 0, 20, 2,
                       help="Raise this if a free key hits rate limits.")
 
