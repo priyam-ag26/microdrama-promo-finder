@@ -90,7 +90,7 @@ h1 *, h2 *, h3 *{font-family:'Fraunces', Georgia, serif !important;}
 }
 [data-testid="stSidebar"] .block-container{padding-top:1.4rem;}
 .side-brand{display:flex; align-items:center; gap:.6rem; margin-bottom:1.2rem;}
-.side-brand img{height:26px;}
+.side-brand img{height:34px; mix-blend-mode:screen;}
 .side-brand span{font-family:'Fraunces',serif; font-weight:700; font-size:1.05rem;}
 .side-h{display:flex; align-items:center; gap:.5rem; color:var(--text); font-weight:700;
         font-size:.92rem; margin:1.1rem 0 .35rem;}
@@ -131,7 +131,9 @@ h1 *, h2 *, h3 *{font-family:'Fraunces', Georgia, serif !important;}
 
 /* hero: centred title on the page itself */
 .hero{text-align:center; padding:1.6rem 1rem 1.8rem; margin:0 auto;}
-.hero-logo img{height:44px; margin-bottom:1.2rem;}
+/* the logo file has a solid black background: "screen" blending makes black disappear
+   into the dark page while white and red stay exact, so no box shows around it */
+.hero-logo img{height:72px; margin-bottom:.6rem; mix-blend-mode:screen;}
 .hero h1{font-size:clamp(2.1rem, 4.6vw, 3.4rem); line-height:1.05; margin:0 auto .8rem; font-weight:700;}
 .hero p{color:var(--muted); font-size:1.06rem; max-width:56ch; margin:0 auto;}
 
