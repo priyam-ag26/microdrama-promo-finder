@@ -123,8 +123,16 @@ def early_score(ep_num, n_eps):
     return max(0.0, 1 - (ep_num - 1) / max(n_eps - 1, 1))
 
 
+def hook_clarity(hook):
+    """A two- or three-word line ("Not anymore.") only grips someone who knows the story.
+    Very short dialogue hooks are discounted; actions and visuals are judged by the AI alone."""
+    if hook.get("beat_type") == "DIALOGUE" and len(str(hook.get("text", "")).split()) <= 3:
+        return 0.8
+    return 1.0
+
+
 def score(hook, cliff, n_eps, stitched):
-    s = (W_HOOK * hook["score"]
+    s = (W_HOOK * hook["score"] * hook_clarity(hook)
          + W_CLIFF * cliff["score"] * cliff_quality(cliff)
          + W_STANDALONE * 10 * standalone_score(hook)
          + W_EARLY * 10 * early_score(hook["episode"], n_eps))
