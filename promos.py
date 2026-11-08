@@ -250,9 +250,11 @@ def rank(promos):
     then fill the rest by score. No duplicates, at most MAX_PER_EPISODE per episode."""
     pool = sorted(promos, key=lambda p: -p["score"])
     chosen, per_ep = [], {}
+    n_eps = len({p["episodes"][0] for p in pool}) or 1
+    cap = max(MAX_PER_EPISODE, -(-TOP_N // n_eps))   # small runs: allow more per episode
 
     def can_add(p):
-        return per_ep.get(p["episodes"][0], 0) < MAX_PER_EPISODE and \
+        return per_ep.get(p["episodes"][0], 0) < cap and \
             not any(overlaps(p, q) for q in chosen)
 
     def add(p):

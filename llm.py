@@ -34,7 +34,7 @@ DEFAULT_MODELS = {
 
 CACHE_DIR = Path(os.getenv("LLM_CACHE_DIR", "llm_cache"))
 TIMEOUT = int(os.getenv("LLM_TIMEOUT", "180"))   # seconds to wait for one reply
-MAX_OUTPUT_TOKENS = 4000   # enough for our JSON answer; keeps each request under free-tier caps
+MAX_OUTPUT_TOKENS = 2500   # our JSON answer is ~800 tokens; a smaller reservation fits free-tier per-minute caps
 
 
 def current_config():
@@ -70,7 +70,14 @@ def _openai_compatible(prompt, model, system, base_url, key_env):
     body = {"model": model, "messages": messages, "temperature": 0.2, "max_tokens": MAX_OUTPUT_TOKENS}
     if JSON_MODE:
         body["response_format"] = {"type": "json_object"}
+    if "gpt-oss" in model:
+        # reasoning models think before answering; picking moments from a script needs little of it,
+        # and low effort means fewer tokens, faster replies and fewer per-minute rate limits
+        body["reasoning_effort"] = "low"
     r = requests.post(f"{base_url}/chat/completions", json=body, headers=headers, timeout=TIMEOUT)
+    if r.status_code == 400 and "reasoning" in r.text.lower() and "reasoning_effort" in body:
+        body.pop("reasoning_effort")          # provider doesn't accept the setting: send without it
+        r = requests.post(f"{base_url}/chat/completions", json=body, headers=headers, timeout=TIMEOUT)
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"]
 

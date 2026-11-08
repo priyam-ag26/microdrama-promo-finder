@@ -334,7 +334,7 @@ with st.sidebar:
     st.markdown(f'<div class="side-h"><span class="ic">{ICON["run"]}</span>Run settings</div>', unsafe_allow_html=True)
     limit = st.number_input("Episodes to process", 0, 500, 5,
                             help="0 processes every episode. Start with 5: free keys are rate-limited.")
-    pause = st.slider("Pause between calls (s)", 0, 20, 7,
+    pause = st.slider("Pause between calls (s)", 0, 20, 2,
                       help="Raise this if a free key hits rate limits.")
 
     ready = bool(api_key)
@@ -406,12 +406,16 @@ def show_results(data, key="example"):
     # ---- one view at a time, switched with buttons right under the stats
     from collections import Counter
     counts = Counter(p.get("category", "Other drama") for p in built)
-    view = st.segmented_control("View", ["Top 5", "By category", "Download all"],
-                                default="Top 5", label_visibility="collapsed",
-                                key=f"view_{key}") or "Top 5"
+    n_top = min(5, len(ranked))
+    top_label = f"Top {n_top}" if n_top else "Top picks"
+    view = st.segmented_control("View", [top_label, "By category", "Download all"],
+                                default=top_label, label_visibility="collapsed",
+                                key=f"view_{key}") or top_label
 
-    if view == "Top 5":
-        st.markdown("### Top 5 to post first")
+    if view == top_label:
+        st.markdown(f"### {top_label} to post first")
+        if n_top < 5:
+            st.caption("Fewer than five clean promos in this run. Process more episodes for a fuller list.")
         for i, p in enumerate(ranked[:5]):
             st.markdown(promo_card(p, top=(i == 0)), unsafe_allow_html=True)
 
@@ -556,10 +560,11 @@ tab_results, tab_how = st.tabs(["Your promos" if mine else "Example results", "H
 
 with tab_results:
     if mine:
-        done_n, up_n = mine.get("episodes", 0), mine.get("uploaded", 0)
+        done_n, up_n, failed = mine.get("episodes", 0), mine.get("uploaded", 0), mine.get("failed", [])
         if up_n and done_n < up_n:
-            st.success(f"Done. Processed {done_n} of {up_n} uploaded episodes. To process more, raise "
-                       f"“Episodes to process” in the left menu (0 = all) and run again.")
+            skipped = f" Episode {', '.join(map(str, failed))} hit a rate limit and was skipped." if failed else ""
+            st.success(f"Done. Processed {done_n} of {up_n} uploaded episodes.{skipped} To process more, "
+                       f"raise “Episodes to process” in the left menu (0 = all) and run again.")
         else:
             st.success("Done. Your promos are ranked below.")
         show_results(mine, key="mine")
