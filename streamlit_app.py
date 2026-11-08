@@ -180,6 +180,7 @@ h1 *, h2 *, h3 *{font-family:'Fraunces', Georgia, serif !important;}
 .promo.top{border-color:rgba(227,34,44,.45);
   background:linear-gradient(160deg, rgba(227,34,44,.10), var(--surface) 55%);}
 .promo-head{display:flex; align-items:center; gap:.7rem; flex-wrap:wrap; margin-bottom:.8rem;}
+.rank:empty{display:none;}
 .rank{font-family:'Fraunces',serif; font-weight:700; font-size:1.6rem; color:var(--red); min-width:2.2rem;}
 .chip{font-size:.75rem; padding:.22rem .6rem; border-radius:999px; background:var(--raised);
   color:var(--muted); border:1px solid var(--line);}
@@ -205,6 +206,13 @@ h1 *, h2 *, h3 *{font-family:'Fraunces', Georgia, serif !important;}
 [data-testid="stAlert"]{background:rgba(227,34,44,.08) !important; border:1px solid rgba(227,34,44,.3) !important;
   border-radius:var(--r-md) !important; color:var(--text) !important;}
 [data-testid="stAlert"] *{color:var(--text) !important;}
+
+/* category selector */
+[data-testid="stButtonGroup"] button{background:var(--surface) !important; border:1px solid var(--line) !important;
+  color:var(--muted) !important; border-radius:999px !important; padding:.45rem .95rem !important; font-weight:600;}
+[data-testid="stButtonGroup"] button[aria-checked="true"], [data-testid="stButtonGroup"] button[kind$="Active"]{
+  background:rgba(227,34,44,.16) !important; border-color:rgba(227,34,44,.6) !important; color:var(--text) !important;}
+[data-testid="stButtonGroup"]{gap:.5rem; flex-wrap:wrap;}
 
 /* empty + info states */
 .empty{padding:2rem; text-align:center; border-radius:var(--r-lg); border:1px dashed var(--line); color:var(--muted);}
@@ -343,7 +351,7 @@ def promo_card(p, top=False):
     return f"""
 <div class="promo {'top' if top else ''}">
   <div class="promo-head">
-    <span class="rank">#{p.get('rank', '')}</span>
+    <span class="rank">{'#' + str(p['rank']) if p.get('rank') else ''}</span>
     <span class="where">{esc(where)}</span>
     <span class="chip cat">{esc(p.get('category', 'Other drama'))}</span>
     <span class="chip">{p['length_s']:.0f}s</span>
@@ -370,54 +378,39 @@ def show_results(data):
   <div class="stat"><div class="v">{stitched}</div><div class="l">Stitched from two moments</div></div>
 </div>""", unsafe_allow_html=True)
 
-    st.markdown("### Post these first")
-    for i, p in enumerate(ranked[:3]):
+    # ---- 1) top five, ranked purely by score
+    st.markdown("### Top 5 to post first")
+    for i, p in enumerate(ranked[:5]):
         st.markdown(promo_card(p, top=(i == 0)), unsafe_allow_html=True)
 
-    # ---- promos by category: what themes this show offers, and the best clip for each
+    # ---- 2) browse by category
     from collections import Counter
     counts = Counter(p.get("category", "Other drama") for p in built)
     if counts:
-        st.markdown("### Promos by category")
-        st.caption("Themes are derived from the type of each hook and the question each cliffhanger "
-                   "leaves open. Use them to plan a varied posting calendar.")
-        top = max(counts.values())
-        tiles = "".join(
-            f'<div class="cat-tile"><div class="n">{n}</div><div class="t">{esc(c)}</div>'
-            f'<div class="bar"><i style="width:{n / top * 100:.0f}%"></i></div></div>'
-            for c, n in counts.most_common())
-        st.markdown(f'<div class="cats">{tiles}</div>', unsafe_allow_html=True)
-        with st.expander("Best promo in each category"):
-            for c, _ in counts.most_common():
-                best = max((p for p in built if p.get("category") == c), key=lambda p: p["score"])
-                st.markdown(promo_card(best), unsafe_allow_html=True)
+        st.markdown("### Browse by category")
+        st.caption("Themes come from the type of each hook and the question each cliffhanger leaves "
+                   "open. Pick one to see its best promos.")
+        options = [c for c, _ in counts.most_common()]
+        choice = st.segmented_control("Category", options, default=options[0],
+                                      format_func=lambda c: f"{c}  ({counts[c]})",
+                                      label_visibility="collapsed", key=f"cat_{id(data)}")
+        if choice:
+            best = sorted((p for p in built if p.get("category") == choice),
+                          key=lambda p: -p["score"])[:3]
+            for p in best:
+                st.markdown(promo_card(p), unsafe_allow_html=True)
 
-    st.markdown("### Full shortlist")
-    eps = sorted({e for p in ranked for e in p["episodes"]})
-    cats = sorted({p.get("category", "Other drama") for p in ranked})
-    c1, c2, c3 = st.columns([2, 1.3, 1])
-    pick = c1.multiselect("Episodes", eps, placeholder="All episodes")
-    cat = c2.selectbox("Category", ["All"] + cats)
-    kind = c3.selectbox("Clip type", ["All", "Continuous", "Stitched"])
-    rows = [p for p in ranked
-            if (not pick or any(e in pick for e in p["episodes"]))
-            and (cat == "All" or p.get("category") == cat)
-            and (kind == "All" or p["type"] == kind.lower())]
-    unfiltered = not pick and cat == "All" and kind == "All"
-    if rows:
-        for p in rows[3:] if unfiltered else rows:
-            st.markdown(promo_card(p), unsafe_allow_html=True)
-    else:
-        st.markdown('<div class="empty"><b>No promos match these filters</b>Clear a filter to see more.</div>',
-                    unsafe_allow_html=True)
-
-    with st.expander("Table view"):
-        st.dataframe(promos_frame(ranked), use_container_width=True, hide_index=True)
-
-    d1, d2 = st.columns(2)
-    d1.download_button("Download shortlist (CSV)", promos_frame(ranked).to_csv(index=False),
-                       "ranked_promos.csv", "text/csv", use_container_width=True)
-    d2.download_button("Download all promos (JSON)",
+    # ---- 3) everything else as downloads
+    st.markdown("### Full list")
+    st.caption(f"The ranked shortlist and all {len(built)} valid promos, with episode, timestamps, "
+               f"category, hook, cliffhanger and why it works.")
+    all_sorted = sorted(built, key=lambda p: -p["score"])
+    d1, d2, d3 = st.columns(3)
+    d1.download_button(f"Shortlist, top {len(ranked)} (CSV)", promos_frame(ranked).to_csv(index=False),
+                       "ranked_shortlist.csv", "text/csv", use_container_width=True)
+    d2.download_button(f"All {len(built)} promos (CSV)", promos_frame(all_sorted).to_csv(index=False),
+                       "all_promos.csv", "text/csv", use_container_width=True)
+    d3.download_button("All promos (JSON)",
                        json.dumps({"count": len(built), "rejected_pairs": data.get("rejected", {}),
                                    "promos": built}, indent=1),
                        "all_promos.json", "application/json", use_container_width=True)
