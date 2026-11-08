@@ -43,6 +43,18 @@ PROVIDERS = {
 }
 KEY_ENV = {"groq": "GROQ_API_KEY", "gemini": "GEMINI_API_KEY",
            "openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY"}
+DEMO_MAX_EPISODES = 5   # protects the shared demo key's free quota
+
+
+def demo_key(provider):
+    """A key the app owner stored as a Streamlit secret, so visitors can try the tool
+    without their own. It is never shown on screen or written to the repo."""
+    try:
+        return str(st.secrets.get(KEY_ENV[provider], "")).strip()
+    except Exception:
+        return ""
+
+
 KEY_HELP = {"groq": "console.groq.com", "gemini": "aistudio.google.com/apikey",
             "openai": "platform.openai.com", "anthropic": "console.anthropic.com"}
 
@@ -203,8 +215,10 @@ h1 *, h2 *, h3 *{font-family:'Fraunces', Georgia, serif !important;}
 .clip-scale{display:flex; justify-content:space-between; color:var(--muted); font-size:.7rem; margin-top:-.6rem; margin-bottom:.8rem;}
 
 /* alerts restyled to the theme */
-[data-testid="stAlert"]{background:rgba(227,34,44,.08) !important; border:1px solid rgba(227,34,44,.3) !important;
-  border-radius:var(--r-md) !important; color:var(--text) !important;}
+[data-testid="stAlert"], [data-testid="stAlertContainer"]{background:rgba(227,34,44,.08) !important;
+  border:1px solid rgba(227,34,44,.3) !important; border-radius:var(--r-md) !important; color:var(--text) !important;}
+[data-testid="stAlertContentSuccess"], [data-testid="stAlertContainer"]:has([data-testid="stAlertContentSuccess"]){
+  background:rgba(63,179,127,.08) !important; border-color:rgba(63,179,127,.35) !important;}
 [data-testid="stAlert"] *{color:var(--text) !important;}
 
 /* category selector */
@@ -302,10 +316,20 @@ with st.sidebar:
                 unsafe_allow_html=True)
 
     st.markdown(f'<div class="side-h"><span class="ic">{ICON["key"]}</span>API key</div>', unsafe_allow_html=True)
-    api_key = st.text_input("API key", type="password", placeholder=f"Paste your {PROVIDERS[provider][0]} key",
+    has_demo = bool(demo_key(provider))
+    own_key = st.text_input("API key", type="password",
+                            placeholder="Optional: a demo key is built in" if has_demo
+                            else f"Paste your {PROVIDERS[provider][0]} key",
                             label_visibility="collapsed")
-    st.markdown(f'<div class="side-note">Get one free at {KEY_HELP[provider]}. Used for this session only, never stored.</div>',
-                unsafe_allow_html=True)
+    if has_demo and not own_key:
+        st.markdown(f'<div class="side-note">A demo key is built in, so you can run it right away '
+                    f'(up to {DEMO_MAX_EPISODES} episodes per run). Paste your own key to use your '
+                    f'quota and run more.</div>', unsafe_allow_html=True)
+    else:
+        st.markdown(f'<div class="side-note">Get one free at {KEY_HELP[provider]}. Used for this session '
+                    f'only, never stored.</div>', unsafe_allow_html=True)
+    using_demo = has_demo and not own_key
+    api_key = own_key or (demo_key(provider) if has_demo else "")
 
     st.markdown(f'<div class="side-h"><span class="ic">{ICON["run"]}</span>Run settings</div>', unsafe_allow_html=True)
     limit = st.number_input("Episodes to process", 0, 500, 5,
@@ -316,7 +340,7 @@ with st.sidebar:
     ready = bool(api_key)
     st.markdown(
         f'<div class="side-status"><span class="dot" style="background:{"var(--good)" if ready else "var(--red)"}"></span>'
-        f'{"Ready to run" if ready else "Add an API key to run a new show"}<br>'
+        f'{"Ready to run with the demo key" if (ready and using_demo) else "Ready to run" if ready else "Add an API key to run a new show"}<br>'
         f'<span style="color:var(--muted)">{esc(PROVIDERS[provider][0])}, {esc(model)}</span></div>',
         unsafe_allow_html=True)
 
@@ -372,7 +396,8 @@ def show_results(data, key="example"):
     stitched = sum(p["type"] == "stitched" for p in built)
     st.markdown(f"""
 <div class="stats">
-  <div class="stat"><div class="v">{data.get('episodes', '—')}</div><div class="l">Episodes read</div></div>
+  <div class="stat"><div class="v">{data.get('episodes', '—')}{f'<span style="font-size:1rem;color:var(--muted)"> of {data["uploaded"]}</span>' if data.get('uploaded') else ''}</div>
+    <div class="l">Episodes processed</div></div>
   <div class="stat"><div class="v">{len(built)}</div><div class="l">Valid promos built</div></div>
   <div class="stat"><div class="v">{len(ranked)}</div><div class="l">On the shortlist</div></div>
   <div class="stat"><div class="v">{stitched}</div><div class="l">Stitched from two moments</div></div>
@@ -447,6 +472,7 @@ def extract_uploads(files, folder):
 
 def run_pipeline(script_dir, limit, pause):
     show = screenplay_parser.load_show(script_dir)
+    uploaded = len(show)
     if limit:
         show = show[:limit]
     if not show:
@@ -470,15 +496,15 @@ def run_pipeline(script_dir, limit, pause):
         bar.progress(i / len(show), text=f"{i} of {len(show)} episodes")
     bar.empty(); note.empty()
     if failed:
-        st.warning(f"{len(failed)} episode(s) were skipped: {failed}. On a free key this is usually "
-                   f"a rate limit; raise the pause or try again later.")
+        st.warning(f"Episode(s) {', '.join(map(str, failed))} could not be processed, usually a free-key "
+                   f"rate limit. Raise the pause in the left menu or run again later.")
     if not hooks or not cliffs:
         st.error("No usable moments came back. Check the API key and model in the sidebar.")
         return None
     cands = {"hooks": hooks, "cliffhangers": cliffs, "provider": provider, "model": model}
     built, rejected = promo_builder.build(show, cands)
     return {"promos": built, "ranked": promo_builder.rank(built), "rejected": rejected,
-            "episodes": len(show)}
+            "episodes": len(show) - len(failed), "uploaded": uploaded, "failed": failed}
 
 
 # ---------------------------------------------------------------- upload panel (main action)
@@ -490,7 +516,7 @@ with st.container(border=True, key="upload_panel"):
   <h3>Find promos in your show</h3>
   <div class="checks">
     <span class="check ok"><i></i>Model: {esc(PROVIDERS[provider][0])}</span>
-    <span class="check {'ok' if key_done else 'todo'}"><i></i>{'API key added' if key_done else 'API key needed'}</span>
+    <span class="check {'ok' if key_done else 'todo'}"><i></i>{'Demo key active' if using_demo else 'API key added' if key_done else 'API key needed'}</span>
   </div>
 </div>""", unsafe_allow_html=True)
     files = st.file_uploader("Episode scripts (.zip or .txt)", type=["zip", "txt"],
@@ -513,7 +539,12 @@ if go:
     work = Path(tempfile.mkdtemp())
     try:
         llm.CACHE_DIR = work / "cache"
-        result = run_pipeline(extract_uploads(files, work / "scripts"), int(limit), int(pause))
+        run_limit = int(limit)
+        if using_demo and (run_limit == 0 or run_limit > DEMO_MAX_EPISODES):
+            run_limit = DEMO_MAX_EPISODES
+            st.info(f"Using the built-in demo key, so this run covers the first {DEMO_MAX_EPISODES} "
+                    f"episodes. Paste your own key in the left menu to process more.")
+        result = run_pipeline(extract_uploads(files, work / "scripts"), run_limit, int(pause))
         if result:
             st.session_state["result"] = result
     finally:
@@ -525,7 +556,12 @@ tab_results, tab_how = st.tabs(["Your promos" if mine else "Example results", "H
 
 with tab_results:
     if mine:
-        st.success("Done. Your promos are ranked below.")
+        done_n, up_n = mine.get("episodes", 0), mine.get("uploaded", 0)
+        if up_n and done_n < up_n:
+            st.success(f"Done. Processed {done_n} of {up_n} uploaded episodes. To process more, raise "
+                       f"“Episodes to process” in the left menu (0 = all) and run again.")
+        else:
+            st.success("Done. Your promos are ranked below.")
         show_results(mine, key="mine")
     else:
         sample = load_sample()
