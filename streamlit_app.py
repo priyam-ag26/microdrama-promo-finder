@@ -367,7 +367,7 @@ def promo_card(p, top=False):
 </div>"""
 
 
-def show_results(data):
+def show_results(data, key="example"):
     ranked, built = data["ranked"], data["promos"]
     stitched = sum(p["type"] == "stitched" for p in built)
     st.markdown(f"""
@@ -378,42 +378,46 @@ def show_results(data):
   <div class="stat"><div class="v">{stitched}</div><div class="l">Stitched from two moments</div></div>
 </div>""", unsafe_allow_html=True)
 
-    # ---- 1) top five, ranked purely by score
-    st.markdown("### Top 5 to post first")
-    for i, p in enumerate(ranked[:5]):
-        st.markdown(promo_card(p, top=(i == 0)), unsafe_allow_html=True)
-
-    # ---- 2) browse by category
+    # ---- one view at a time, switched with buttons right under the stats
     from collections import Counter
     counts = Counter(p.get("category", "Other drama") for p in built)
-    if counts:
-        st.markdown("### Browse by category")
-        st.caption("Themes come from the type of each hook and the question each cliffhanger leaves "
-                   "open. Pick one to see its best promos.")
+    view = st.segmented_control("View", ["Top 5", "By category", "Download all"],
+                                default="Top 5", label_visibility="collapsed",
+                                key=f"view_{key}") or "Top 5"
+
+    if view == "Top 5":
+        st.markdown("### Top 5 to post first")
+        for i, p in enumerate(ranked[:5]):
+            st.markdown(promo_card(p, top=(i == 0)), unsafe_allow_html=True)
+
+    elif view == "By category":
+        st.markdown("### Best promos by category")
+        st.caption("Themes come from the type of each hook and the question each cliffhanger "
+                   "leaves open. Pick one to see its three best promos.")
         options = [c for c, _ in counts.most_common()]
-        choice = st.segmented_control("Category", options, default=options[0],
-                                      format_func=lambda c: f"{c}  ({counts[c]})",
-                                      label_visibility="collapsed", key=f"cat_{id(data)}")
+        choice = st.segmented_control("Category", options, default=options[0] if options else None,
+                                      label_visibility="collapsed", key=f"cat_{key}")
         if choice:
-            best = sorted((p for p in built if p.get("category") == choice),
-                          key=lambda p: -p["score"])[:3]
-            for p in best:
+            for p in sorted((p for p in built if p.get("category") == choice),
+                            key=lambda p: -p["score"])[:3]:
                 st.markdown(promo_card(p), unsafe_allow_html=True)
 
-    # ---- 3) everything else as downloads
-    st.markdown("### Full list")
-    st.caption(f"The ranked shortlist and all {len(built)} valid promos, with episode, timestamps, "
-               f"category, hook, cliffhanger and why it works.")
-    all_sorted = sorted(built, key=lambda p: -p["score"])
-    d1, d2, d3 = st.columns(3)
-    d1.download_button(f"Shortlist, top {len(ranked)} (CSV)", promos_frame(ranked).to_csv(index=False),
-                       "ranked_shortlist.csv", "text/csv", use_container_width=True)
-    d2.download_button(f"All {len(built)} promos (CSV)", promos_frame(all_sorted).to_csv(index=False),
-                       "all_promos.csv", "text/csv", use_container_width=True)
-    d3.download_button("All promos (JSON)",
-                       json.dumps({"count": len(built), "rejected_pairs": data.get("rejected", {}),
-                                   "promos": built}, indent=1),
-                       "all_promos.json", "application/json", use_container_width=True)
+    else:
+        st.markdown("### Download all promos")
+        st.caption(f"The ranked shortlist and all {len(built)} valid promos, with episode, "
+                   f"timestamps, category, hook, cliffhanger and why it works.")
+        all_sorted = sorted(built, key=lambda p: -p["score"])
+        d1, d2, d3 = st.columns(3)
+        d1.download_button(f"Shortlist, top {len(ranked)} (CSV)", promos_frame(ranked).to_csv(index=False),
+                           "ranked_shortlist.csv", "text/csv", use_container_width=True,
+                           key=f"dl1_{key}")
+        d2.download_button(f"All {len(built)} promos (CSV)", promos_frame(all_sorted).to_csv(index=False),
+                           "all_promos.csv", "text/csv", use_container_width=True, key=f"dl2_{key}")
+        d3.download_button("All promos (JSON)",
+                           json.dumps({"count": len(built), "rejected_pairs": data.get("rejected", {}),
+                                       "promos": built}, indent=1),
+                           "all_promos.json", "application/json", use_container_width=True,
+                           key=f"dl3_{key}")
 
     rej = data.get("rejected") or {}
     if rej:
@@ -522,7 +526,7 @@ tab_results, tab_how = st.tabs(["Your promos" if mine else "Example results", "H
 with tab_results:
     if mine:
         st.success("Done. Your promos are ranked below.")
-        show_results(mine)
+        show_results(mine, key="mine")
     else:
         sample = load_sample()
         if not sample:
