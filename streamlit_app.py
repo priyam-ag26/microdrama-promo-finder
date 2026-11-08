@@ -1,13 +1,16 @@
 """
-Promo Finder for microdrama screenplays — Streamlit UI.
+Microdrama Promo Finder — Streamlit interface.
 
-Two ways to use it:
-  * Sample results: the full ranked output from a completed run, shown instantly, no API key.
-  * Run a new show: upload screenplays (.zip or .txt) and run the pipeline live.
+Design: a dark "screening room" look. Deep plum-black surfaces, a warm red ember glow taken from
+the brand red, a soft serif for titles (like a film title card) and a clean sans for the UI.
+The one recurring visual idea is the clip timeline: every promo shows where its hook lands and
+where it cuts, on a 0–60 second scale.
 
-The pipeline itself lives in parser.py / llm.py / prompts.py / candidates.py / promos.py.
-This file is only the interface, so the tool can be used from a notebook, the command line or here.
+The pipeline lives in parser.py / llm.py / prompts.py / candidates.py / promos.py.
+This file is only the interface.
 """
+import base64
+import html
 import io
 import json
 import os
@@ -24,161 +27,288 @@ import llm
 import parser as screenplay_parser
 import promos as promo_builder
 
-st.set_page_config(page_title="Microdrama Promo Finder", page_icon="🎬", layout="wide")
+st.set_page_config(page_title="Microdrama Promo Finder", page_icon="🎬", layout="wide",
+                   initial_sidebar_state="expanded")
 
-SAMPLE = Path("sample_results")
+HERE = Path(__file__).parent
+SAMPLE = HERE / "sample_results" / "all_promos.json"
+LOGO = next((p for p in [HERE / "assets" / "logo.png", HERE / "assets" / "logo.svg"]
+             if p.exists()), None)
+
 PROVIDERS = {
-    "groq": ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"],
-    "gemini": ["gemini-flash-latest", "gemini-3.5-flash", "gemini-flash-lite-latest"],
-    "openai": ["gpt-4o-mini", "gpt-4o"],
-    "anthropic": ["claude-sonnet-4-5", "claude-haiku-4-5"],
+    "groq": ("Groq", ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]),
+    "gemini": ("Google Gemini", ["gemini-flash-latest", "gemini-3.5-flash", "gemini-flash-lite-latest"]),
+    "openai": ("OpenAI", ["gpt-4o-mini", "gpt-4o"]),
+    "anthropic": ("Anthropic", ["claude-sonnet-4-5", "claude-haiku-4-5"]),
 }
 KEY_ENV = {"groq": "GROQ_API_KEY", "gemini": "GEMINI_API_KEY",
            "openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY"}
+KEY_HELP = {"groq": "console.groq.com", "gemini": "aistudio.google.com/apikey",
+            "openai": "platform.openai.com", "anthropic": "console.anthropic.com"}
+
+# ---------------------------------------------------------------- design tokens + CSS
+CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Manrope:wght@400;500;600;700&display=swap');
+
+:root{
+  --ink:#070509;        /* page */
+  --surface:#110D13;    /* cards */
+  --raised:#1A141D;     /* inputs, hovered */
+  --line:rgba(255,236,240,.08);
+  --text:#F5EFF1;
+  --muted:#A99BA6;
+  --red:#E3222C;        /* brand red */
+  --ember:#7E1420;      /* deep glow */
+  --good:#3FB37F;
+  --r-lg:20px; --r-md:14px; --r-sm:10px;
+}
+
+/* page + streamlit chrome */
+html, body, [data-testid="stAppViewContainer"]{
+  background:
+    radial-gradient(1100px 520px at 50% -180px, rgba(227,34,44,.30), transparent 70%),
+    radial-gradient(700px 400px at 100% 0%, rgba(126,20,32,.25), transparent 70%),
+    var(--ink) !important;
+  color:var(--text);
+  font-family:'Manrope', system-ui, sans-serif;
+}
+[data-testid="stHeader"]{background:transparent;}
+#MainMenu, footer, [data-testid="stToolbar"], [data-testid="stDecoration"]{visibility:hidden;}
+.block-container{padding-top:2.2rem; max-width:1180px;}
+h1,h2,h3, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3,
+[data-testid="stMarkdownContainer"] h1, [data-testid="stMarkdownContainer"] h2,
+[data-testid="stMarkdownContainer"] h3, .hero h1{
+  font-family:'Fraunces', Georgia, serif !important; letter-spacing:-.01em; color:var(--text) !important;}
+p, li, label, span, div{font-family:'Manrope', system-ui, sans-serif;}
+h1 *, h2 *, h3 *{font-family:'Fraunces', Georgia, serif !important;}
+
+/* sidebar */
+[data-testid="stSidebar"]{
+  background:linear-gradient(180deg, #0D0A0F 0%, #08060A 100%) !important;
+  border-right:1px solid var(--line);
+}
+[data-testid="stSidebar"] .block-container{padding-top:1.4rem;}
+.side-brand{display:flex; align-items:center; gap:.6rem; margin-bottom:1.2rem;}
+.side-brand img{height:26px;}
+.side-brand span{font-family:'Fraunces',serif; font-weight:700; font-size:1.05rem;}
+.side-h{display:flex; align-items:center; gap:.5rem; color:var(--text); font-weight:700;
+        font-size:.92rem; margin:1.1rem 0 .35rem;}
+.side-h .ic{width:22px; height:22px; border-radius:7px; display:grid; place-items:center;
+            background:rgba(227,34,44,.14); color:var(--red); font-size:.8rem;}
+.side-note{color:var(--muted); font-size:.78rem; line-height:1.45; margin-top:.2rem;}
+.side-status{margin-top:1rem; padding:.7rem .8rem; border-radius:var(--r-sm);
+             border:1px solid var(--line); background:rgba(255,255,255,.02); font-size:.8rem;}
+.dot{display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:.45rem;}
+
+/* inputs */
+[data-baseweb="select"] > div, [data-baseweb="input"] > div, .stNumberInput input{
+  background:var(--raised) !important; border:1px solid var(--line) !important;
+  border-radius:var(--r-sm) !important; color:var(--text) !important;
+}
+.stSlider [role="slider"]{background:var(--red) !important;}
+
+/* buttons */
+.stButton > button, .stDownloadButton > button{
+  border-radius:999px; border:1px solid var(--line); background:var(--raised);
+  color:var(--text); font-weight:600; padding:.55rem 1.2rem; transition:border-color .15s;
+}
+.stButton > button:hover, .stDownloadButton > button:hover{border-color:rgba(227,34,44,.6); color:var(--text);}
+.stButton > button[kind="primary"]{
+  background:linear-gradient(135deg, #F0313A 0%, #B3161F 100%); border:none;
+  box-shadow:0 8px 28px -8px rgba(227,34,44,.65);
+}
+.stButton > button[kind="primary"]:disabled{background:var(--raised); color:var(--muted);
+  box-shadow:none; border:1px solid var(--line); opacity:1;}
+.stButton > button:focus-visible, .stDownloadButton > button:focus-visible{outline:2px solid var(--red); outline-offset:2px;}
+
+/* tabs */
+.stTabs [data-baseweb="tab-list"]{gap:.4rem; border-bottom:1px solid var(--line);}
+.stTabs [data-baseweb="tab"]{background:transparent; color:var(--muted); font-weight:600;
+  padding:.6rem 1rem; border-radius:10px 10px 0 0;}
+.stTabs [aria-selected="true"]{color:var(--text) !important;}
+.stTabs [data-baseweb="tab-highlight"]{background:var(--red) !important;}
+
+/* hero: centred title on the page itself */
+.hero{text-align:center; padding:1.6rem 1rem 1.8rem; margin:0 auto;}
+.hero-logo img{height:44px; margin-bottom:1.2rem;}
+.hero h1{font-size:clamp(2.1rem, 4.6vw, 3.4rem); line-height:1.05; margin:0 auto .8rem; font-weight:700;}
+.hero p{color:var(--muted); font-size:1.06rem; max-width:56ch; margin:0 auto;}
+
+/* upload panel: the main action, first thing below the title */
+.panel-head{display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap; margin-bottom:.9rem;}
+.panel-head h3{margin:0; font-size:1.35rem;}
+.checks{display:flex; gap:.5rem; flex-wrap:wrap;}
+.check{display:inline-flex; align-items:center; gap:.45rem; font-size:.8rem; padding:.32rem .7rem;
+  border-radius:999px; border:1px solid var(--line); background:rgba(255,255,255,.02); color:var(--muted);}
+.check.ok{color:var(--text); border-color:rgba(63,179,127,.45);}
+.check.todo{color:var(--text); border-color:rgba(227,34,44,.55);}
+.check i{width:7px; height:7px; border-radius:50%; background:var(--muted); display:inline-block;}
+.check.ok i{background:var(--good);} .check.todo i{background:var(--red);}
+.st-key-upload_panel, [data-testid="stVerticalBlockBorderWrapper"]:has(.upload-anchor){
+  border:1px solid rgba(227,34,44,.30) !important; border-radius:24px !important; padding:1.4rem 1.5rem !important;
+  background:linear-gradient(180deg, rgba(227,34,44,.07), rgba(17,13,19,.6) 60%) !important;}
+.hint{color:var(--muted); font-size:.85rem; margin-top:.2rem;}
+
+/* setup guide */
+.guide{border-radius:var(--r-lg); border:1px solid rgba(227,34,44,.28);
+  background:linear-gradient(180deg, rgba(227,34,44,.08), rgba(227,34,44,.02));
+  padding:1.2rem 1.4rem; margin-bottom:1.4rem;}
+.guide h3{font-size:1.15rem; margin:0 0 .8rem;}
+.steps{display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:.8rem;}
+.step{display:flex; gap:.7rem; align-items:flex-start; padding:.8rem; border-radius:var(--r-md);
+  background:rgba(14,10,16,.55); border:1px solid var(--line);}
+.step .n{flex:0 0 28px; height:28px; border-radius:50%; display:grid; place-items:center;
+  font-weight:700; font-size:.85rem; background:var(--raised); color:var(--muted);}
+.step.done .n{background:var(--good); color:#06140D;}
+.step b{display:block; font-size:.92rem; margin-bottom:.15rem;}
+.step span{color:var(--muted); font-size:.82rem; line-height:1.4;}
+@media (max-width:820px){.steps{grid-template-columns:1fr;}}
+
+/* stats */
+.stats{display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:.8rem; margin:.4rem 0 1.4rem;}
+.stat{padding:1rem 1.1rem; border-radius:var(--r-md); background:var(--surface); border:1px solid var(--line);}
+.stat .v{font-family:'Fraunces',serif; font-size:1.9rem; font-weight:700; line-height:1;}
+.stat .l{color:var(--muted); font-size:.82rem; margin-top:.35rem;}
+@media (max-width:820px){.stats{grid-template-columns:repeat(2, minmax(0,1fr));}}
+
+/* promo cards */
+.promo{position:relative; padding:1.2rem 1.3rem; border-radius:var(--r-lg); background:var(--surface);
+  border:1px solid var(--line); margin-bottom:.9rem;}
+.promo.top{border-color:rgba(227,34,44,.45);
+  background:linear-gradient(160deg, rgba(227,34,44,.10), var(--surface) 55%);}
+.promo-head{display:flex; align-items:center; gap:.7rem; flex-wrap:wrap; margin-bottom:.8rem;}
+.rank{font-family:'Fraunces',serif; font-weight:700; font-size:1.6rem; color:var(--red); min-width:2.2rem;}
+.chip{font-size:.75rem; padding:.22rem .6rem; border-radius:999px; background:var(--raised);
+  color:var(--muted); border:1px solid var(--line);}
+.chip.score{color:var(--text); border-color:rgba(227,34,44,.4);}
+.chip.cat{color:#FFD9DC; background:rgba(227,34,44,.16); border-color:rgba(227,34,44,.35);}
+.cats{display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:.7rem; margin:.3rem 0 1rem;}
+.cat-tile{padding:.9rem 1rem; border-radius:var(--r-md); background:var(--surface); border:1px solid var(--line);}
+.cat-tile .n{font-family:'Fraunces',serif; font-size:1.6rem; font-weight:700; line-height:1;}
+.cat-tile .t{font-weight:600; font-size:.9rem; margin-top:.3rem;}
+.cat-tile .bar{height:4px; border-radius:999px; background:rgba(255,255,255,.06); margin-top:.6rem; overflow:hidden;}
+.cat-tile .bar i{display:block; height:100%; background:linear-gradient(90deg, var(--red), var(--ember));}
+.where{font-weight:600; font-size:.92rem;}
+.beats{display:grid; grid-template-columns:auto 1fr; gap:.35rem .8rem; font-size:.95rem; line-height:1.45;}
+.beats .k{color:var(--muted); font-size:.8rem; padding-top:.15rem;}
+.why{color:var(--muted); font-size:.85rem; margin-top:.75rem; padding-top:.7rem; border-top:1px solid var(--line);}
+.clip{position:relative; height:8px; border-radius:999px; background:rgba(255,255,255,.06); margin:.2rem 0 .9rem;}
+.clip .fill{position:absolute; left:0; top:0; bottom:0; border-radius:999px;
+  background:linear-gradient(90deg, var(--red), var(--ember));}
+.clip .min{position:absolute; top:-3px; bottom:-3px; width:1px; background:rgba(255,255,255,.35);}
+.clip-scale{display:flex; justify-content:space-between; color:var(--muted); font-size:.7rem; margin-top:-.6rem; margin-bottom:.8rem;}
+
+/* alerts restyled to the theme */
+[data-testid="stAlert"]{background:rgba(227,34,44,.08) !important; border:1px solid rgba(227,34,44,.3) !important;
+  border-radius:var(--r-md) !important; color:var(--text) !important;}
+[data-testid="stAlert"] *{color:var(--text) !important;}
+
+/* empty + info states */
+.empty{padding:2rem; text-align:center; border-radius:var(--r-lg); border:1px dashed var(--line); color:var(--muted);}
+.empty b{color:var(--text); display:block; font-size:1.05rem; margin-bottom:.3rem;}
+[data-testid="stFileUploader"] section{background:var(--surface); border:1px dashed rgba(227,34,44,.35);
+  border-radius:var(--r-lg);}
+[data-testid="stExpander"]{background:var(--surface); border:1px solid var(--line); border-radius:var(--r-md);}
+[data-testid="stDataFrame"]{border:1px solid var(--line); border-radius:var(--r-md); overflow:hidden;}
+</style>
+"""
+st.markdown(CSS, unsafe_allow_html=True)
 
 
-# ----------------------------------------------------------------- helpers
+
+ICON = {
+    "model": '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>',
+    "key": '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2M17 6l3 3M14 9l2 2"/></svg>',
+    "run": '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg>',
+}
+
+# ---------------------------------------------------------------- small helpers
+def esc(x):
+    return html.escape(str(x or ""))
+
+
+def logo_tag(height_class=""):
+    if not LOGO:
+        return ""
+    mime = "image/svg+xml" if LOGO.suffix == ".svg" else "image/png"
+    b64 = base64.b64encode(LOGO.read_bytes()).decode()
+    return f'<img src="data:{mime};base64,{b64}" alt="Kuku">'
+
+
+def _drive_download_url(link):
+    """Turn a Google Drive share link into a direct download link."""
+    import re
+    m = re.search(r"/d/([\w-]+)", link) or re.search(r"[?&]id=([\w-]+)", link)
+    return f"https://drive.google.com/uc?export=download&id={m.group(1)}" if m else link
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_json(url):
+    import requests
+    r = requests.get(_drive_download_url(url), timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
 def load_sample():
+    """Example results. Loaded from a link set as a Streamlit secret (SAMPLE_URL), so the
+    show's content never sits in the public repo. Falls back to a local file if present."""
     try:
-        return json.loads((SAMPLE / "all_promos.json").read_text())
+        url = st.secrets.get("SAMPLE_URL", "")
+    except Exception:
+        url = ""
+    if url:
+        try:
+            return _fetch_json(url)
+        except Exception:
+            pass
+    try:
+        return json.loads(SAMPLE.read_text())
     except Exception:
         return None
 
 
-def promos_to_frame(promos):
-    rows = []
-    for p in promos:
-        rows.append({
-            "Rank": p.get("rank", ""),
-            "Score": p["score"],
-            "Episode(s)": ", ".join(str(e) for e in p["episodes"]),
-            "Segments": " + ".join(f"{s['start']}–{s['end']}" for s in p["segments"]),
-            "Length (s)": p["length_s"],
-            "Type": p["type"],
-            "Hook": p["hook"],
-            "Cliffhanger": p["cliffhanger"],
-            "Why it works": p["why"],
-        })
-    return pd.DataFrame(rows)
+def promos_frame(rows):
+    return pd.DataFrame([{
+        "Rank": p.get("rank", ""), "Score": p["score"],
+        "Episode": ", ".join(str(e) for e in p["episodes"]),
+        "Cut": " + ".join(f"{s['start']}–{s['end']}" for s in p["segments"]),
+        "Category": p.get("category", ""), "Length (s)": p["length_s"], "Type": p["type"].capitalize(),
+        "Hook": p["hook"], "Cliffhanger": p["cliffhanger"], "Why it works": p["why"],
+    } for p in rows])
 
 
-def extract_uploads(files, folder):
-    """Save uploaded .zip / .txt files into folder; return the directory holding the scripts."""
-    folder.mkdir(parents=True, exist_ok=True)
-    for f in files:
-        if f.name.lower().endswith(".zip"):
-            with zipfile.ZipFile(io.BytesIO(f.getvalue())) as z:
-                z.extractall(folder)
-        else:
-            (folder / f.name).write_bytes(f.getvalue())
-    # a zip often contains one show folder; use the deepest folder that holds .txt files
-    txt_dirs = {p.parent for p in folder.rglob("*.txt")}
-    return max(txt_dirs, key=lambda d: len(list(d.glob("*.txt")))) if txt_dirs else folder
+# ---------------------------------------------------------------- sidebar
+with st.sidebar:
+    st.markdown(f'<div class="side-brand">{logo_tag()}<span>Promo Finder</span></div>',
+                unsafe_allow_html=True)
 
+    st.markdown(f'<div class="side-h"><span class="ic">{ICON["model"]}</span>AI model</div>', unsafe_allow_html=True)
+    provider = st.selectbox("Provider", list(PROVIDERS), format_func=lambda k: PROVIDERS[k][0],
+                            label_visibility="collapsed")
+    model = st.selectbox("Model", PROVIDERS[provider][1], label_visibility="collapsed")
+    st.markdown('<div class="side-note">Switching models takes two settings and no code changes.</div>',
+                unsafe_allow_html=True)
 
-def run_pipeline(script_dir, limit, seconds_between):
-    show = screenplay_parser.load_show(script_dir)
-    if limit:
-        show = show[:limit]
-    if not show:
-        st.error("No screenplay .txt files found in the upload.")
-        return None, None
+    st.markdown(f'<div class="side-h"><span class="ic">{ICON["key"]}</span>API key</div>', unsafe_allow_html=True)
+    api_key = st.text_input("API key", type="password", placeholder=f"Paste your {PROVIDERS[provider][0]} key",
+                            label_visibility="collapsed")
+    st.markdown(f'<div class="side-note">Get one free at {KEY_HELP[provider]}. Used for this session only, never stored.</div>',
+                unsafe_allow_html=True)
 
-    st.success(f"Parsed {len(show)} episodes, "
-               f"{sum(len(e['beats']) for e in show)} beats. Finding promo moments…")
+    st.markdown(f'<div class="side-h"><span class="ic">{ICON["run"]}</span>Run settings</div>', unsafe_allow_html=True)
+    limit = st.number_input("Episodes to process", 0, 500, 5,
+                            help="0 processes every episode. Start with 5: free keys are rate-limited.")
+    pause = st.slider("Pause between calls (s)", 0, 20, 7,
+                      help="Raise this if a free key hits rate limits.")
 
-    candidates.SECONDS_BETWEEN_CALLS = seconds_between
-    bar = st.progress(0.0, text="Starting…")
-    status = st.empty()
-    hooks, cliffs, failed = [], [], []
-
-    for i, ep in enumerate(show, 1):
-        status.write(f"Episode {ep['episode']} ({i}/{len(show)})…")
-        try:
-            answer = candidates.call_llm_json(
-                candidates.build_prompt(ep, compact=candidates.COMPACT),
-                system=candidates.EDITOR_SYSTEM)
-            kept, _ = candidates.validate_moments(ep, answer)
-            hooks += kept["hooks"]
-            cliffs += kept["cliffhangers"]
-        except Exception as e:                      # one bad episode must not stop the run
-            failed.append(ep["episode"])
-            status.warning(f"Episode {ep['episode']} failed: {str(e)[:120]}")
-        bar.progress(i / len(show), text=f"{i}/{len(show)} episodes")
-
-    bar.empty()
-    status.empty()
-    if failed:
-        st.warning(f"{len(failed)} episode(s) failed and were skipped: {failed}")
-    if not hooks or not cliffs:
-        st.error("No usable moments were found. Check the API key and model in the sidebar.")
-        return None, None
-
-    cands = {"hooks": hooks, "cliffhangers": cliffs,
-             "provider": llm.current_config()[0], "model": llm.current_config()[1]}
-    built, rejected = promo_builder.build(show, cands)
-    ranked = promo_builder.rank(built)
-    return {"promos": built, "ranked": ranked, "rejected": rejected,
-            "episodes": len(show), "failed": failed}, show
-
-
-def show_results(data, show=None):
-    ranked, built = data["ranked"], data["promos"]
-    stitched = sum(p["type"] == "stitched" for p in built)
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Episodes", data["episodes"])
-    c2.metric("Valid promos", len(built))
-    c3.metric("Stitched", f"{stitched} ({stitched * 100 // max(len(built), 1)}%)")
-    c4.metric("Shortlist", len(ranked))
-
-    st.subheader("Post these first")
-    for p in ranked[:3]:
-        with st.container(border=True):
-            segs = " + ".join(f"Ep {s['episode']} {s['start']}–{s['end']}" for s in p["segments"])
-            st.markdown(f"**#{p['rank']} · {segs} · {p['length_s']}s · {p['type']}**")
-            st.markdown(f"🎣 **Hook:** {p['hook']}")
-            st.markdown(f"✂️ **Cliffhanger:** {p['cliffhanger']}")
-            st.caption(p["why"])
-
-    st.subheader("Full shortlist")
-    eps = sorted({e for p in ranked for e in p["episodes"]})
-    f1, f2 = st.columns([2, 1])
-    pick = f1.multiselect("Filter by episode", eps, default=[])
-    kind = f2.selectbox("Type", ["all", "continuous", "stitched"])
-    rows = [p for p in ranked
-            if (not pick or any(e in pick for e in p["episodes"]))
-            and (kind == "all" or p["type"] == kind)]
-    st.dataframe(promos_to_frame(rows), use_container_width=True, hide_index=True)
-
-    st.subheader("Download")
-    d1, d2 = st.columns(2)
-    d1.download_button("Shortlist (CSV)", promos_to_frame(ranked).to_csv(index=False),
-                       "ranked_promos.csv", "text/csv", use_container_width=True)
-    d2.download_button("All promos (JSON)", json.dumps(
-        {"count": len(built), "rejected_pairs": data["rejected"], "promos": built}, indent=1),
-        "all_promos.json", "application/json", use_container_width=True)
-
-    with st.expander("What the code rejected, and why"):
-        st.write(data["rejected"])
-        st.caption("The model proposes moments; code enforces length, order, clean cut points "
-                   "and how unresolved the ending is. These counts are those rules at work.")
-
-
-# ----------------------------------------------------------------- sidebar
-st.sidebar.title("⚙️ Model")
-provider = st.sidebar.selectbox("Provider", list(PROVIDERS), index=0)
-model = st.sidebar.selectbox("Model", PROVIDERS[provider], index=0)
-api_key = st.sidebar.text_input(f"{KEY_ENV[provider]}", type="password",
-                                help="Your key is used only for this session and never stored.")
-st.sidebar.caption("Swapping models is two settings — no code changes.")
-
-st.sidebar.divider()
-st.sidebar.subheader("Run settings")
-limit = st.sidebar.number_input("Episodes to process (0 = all)", 0, 500, 5,
-                                help="Free API tiers are slow. Start with 5 to see it work.")
-seconds_between = st.sidebar.slider("Seconds between calls", 0, 20, 7,
-                                    help="Raise this if you hit rate limits on a free key.")
+    ready = bool(api_key)
+    st.markdown(
+        f'<div class="side-status"><span class="dot" style="background:{"var(--good)" if ready else "var(--red)"}"></span>'
+        f'{"Ready to run" if ready else "Add an API key to run a new show"}<br>'
+        f'<span style="color:var(--muted)">{esc(PROVIDERS[provider][0])}, {esc(model)}</span></div>',
+        unsafe_allow_html=True)
 
 os.environ["LLM_PROVIDER"] = provider
 os.environ["LLM_MODEL"] = model
@@ -186,68 +316,250 @@ if api_key:
     os.environ[KEY_ENV[provider]] = api_key.strip()
 
 
-# ----------------------------------------------------------------- main
-st.title("🎬 Microdrama Promo Finder")
-st.caption("Finds the 20–60 second clips worth posting: opens on a hook, cuts on a cliffhanger, "
-           "makes sense to someone who has never seen the show.")
+# ---------------------------------------------------------------- hero
+st.markdown(f"""
+<div class="hero">
+  <div class="hero-logo">{logo_tag()}</div>
+  <h1>Microdrama Promo Finder</h1>
+  <p>Upload a show and get the 20 to 60 second clips worth posting first. Each one opens on a
+  hook that stops the scroll and cuts on a cliffhanger, ready for an editor to approve.</p>
+</div>
+""", unsafe_allow_html=True)
 
-tab_sample, tab_run, tab_how = st.tabs(["📊 Sample results", "🚀 Run a new show", "ℹ️ How it works"])
 
-with tab_sample:
-    sample = load_sample()
-    if not sample:
-        st.info("No sample results bundled with this deployment. Use the 'Run a new show' tab.")
+# ---------------------------------------------------------------- results rendering
+def clip_bar(length):
+    pct = min(length / 60, 1) * 100
+    return (f'<div class="clip"><div class="fill" style="width:{pct:.0f}%"></div>'
+            f'<div class="min" style="left:33.3%"></div></div>'
+            f'<div class="clip-scale"><span>0s</span><span>20s min</span><span>60s max</span></div>')
+
+
+def promo_card(p, top=False):
+    where = " + ".join(f"Episode {s['episode']}, {s['start']} to {s['end']}" for s in p["segments"])
+    kind = "Stitched from two moments" if p["type"] == "stitched" else "One continuous clip"
+    return f"""
+<div class="promo {'top' if top else ''}">
+  <div class="promo-head">
+    <span class="rank">#{p.get('rank', '')}</span>
+    <span class="where">{esc(where)}</span>
+    <span class="chip cat">{esc(p.get('category', 'Other drama'))}</span>
+    <span class="chip">{p['length_s']:.0f}s</span>
+    <span class="chip">{kind}</span>
+    <span class="chip score">Score {p['score']}</span>
+  </div>
+  {clip_bar(p['length_s'])}
+  <div class="beats">
+    <span class="k">Opens on</span><span>{esc(p['hook'])}</span>
+    <span class="k">Cuts on</span><span>{esc(p['cliffhanger'])}</span>
+  </div>
+  <div class="why">{esc(p['why'])}</div>
+</div>"""
+
+
+def show_results(data):
+    ranked, built = data["ranked"], data["promos"]
+    stitched = sum(p["type"] == "stitched" for p in built)
+    st.markdown(f"""
+<div class="stats">
+  <div class="stat"><div class="v">{data.get('episodes', '—')}</div><div class="l">Episodes read</div></div>
+  <div class="stat"><div class="v">{len(built)}</div><div class="l">Valid promos built</div></div>
+  <div class="stat"><div class="v">{len(ranked)}</div><div class="l">On the shortlist</div></div>
+  <div class="stat"><div class="v">{stitched}</div><div class="l">Stitched from two moments</div></div>
+</div>""", unsafe_allow_html=True)
+
+    st.markdown("### Post these first")
+    for i, p in enumerate(ranked[:3]):
+        st.markdown(promo_card(p, top=(i == 0)), unsafe_allow_html=True)
+
+    # ---- promos by category: what themes this show offers, and the best clip for each
+    from collections import Counter
+    counts = Counter(p.get("category", "Other drama") for p in built)
+    if counts:
+        st.markdown("### Promos by category")
+        st.caption("Themes are derived from the type of each hook and the question each cliffhanger "
+                   "leaves open. Use them to plan a varied posting calendar.")
+        top = max(counts.values())
+        tiles = "".join(
+            f'<div class="cat-tile"><div class="n">{n}</div><div class="t">{esc(c)}</div>'
+            f'<div class="bar"><i style="width:{n / top * 100:.0f}%"></i></div></div>'
+            for c, n in counts.most_common())
+        st.markdown(f'<div class="cats">{tiles}</div>', unsafe_allow_html=True)
+        with st.expander("Best promo in each category"):
+            for c, _ in counts.most_common():
+                best = max((p for p in built if p.get("category") == c), key=lambda p: p["score"])
+                st.markdown(promo_card(best), unsafe_allow_html=True)
+
+    st.markdown("### Full shortlist")
+    eps = sorted({e for p in ranked for e in p["episodes"]})
+    cats = sorted({p.get("category", "Other drama") for p in ranked})
+    c1, c2, c3 = st.columns([2, 1.3, 1])
+    pick = c1.multiselect("Episodes", eps, placeholder="All episodes")
+    cat = c2.selectbox("Category", ["All"] + cats)
+    kind = c3.selectbox("Clip type", ["All", "Continuous", "Stitched"])
+    rows = [p for p in ranked
+            if (not pick or any(e in pick for e in p["episodes"]))
+            and (cat == "All" or p.get("category") == cat)
+            and (kind == "All" or p["type"] == kind.lower())]
+    unfiltered = not pick and cat == "All" and kind == "All"
+    if rows:
+        for p in rows[3:] if unfiltered else rows:
+            st.markdown(promo_card(p), unsafe_allow_html=True)
     else:
-        st.caption(f"A completed run on one 50-episode show "
-                   f"({sample.get('provider', '')} {sample.get('model', '')}). No API key needed.")
-        ranked = [p for p in sample["promos"] if p.get("rank")]
-        ranked.sort(key=lambda p: p["rank"])
-        show_results({"promos": sample["promos"], "ranked": ranked,
-                      "rejected": sample.get("rejected_pairs", {}),
-                      "episodes": sample.get("episodes", "—")})
+        st.markdown('<div class="empty"><b>No promos match these filters</b>Clear a filter to see more.</div>',
+                    unsafe_allow_html=True)
 
-with tab_run:
-    st.markdown("Upload screenplays as a **.zip** or individual **.txt** files. "
-                "Each file needs timestamped beats (`Start: (00:11.30) | End: (00:13.10)`).")
-    files = st.file_uploader("Screenplays", type=["zip", "txt"], accept_multiple_files=True)
-    go = st.button("Find promos", type="primary", disabled=not files)
+    with st.expander("Table view"):
+        st.dataframe(promos_frame(ranked), use_container_width=True, hide_index=True)
 
-    if go:
-        if not api_key:
-            st.error(f"Add your {KEY_ENV[provider]} in the sidebar first.")
+    d1, d2 = st.columns(2)
+    d1.download_button("Download shortlist (CSV)", promos_frame(ranked).to_csv(index=False),
+                       "ranked_promos.csv", "text/csv", use_container_width=True)
+    d2.download_button("Download all promos (JSON)",
+                       json.dumps({"count": len(built), "rejected_pairs": data.get("rejected", {}),
+                                   "promos": built}, indent=1),
+                       "all_promos.json", "application/json", use_container_width=True)
+
+    rej = data.get("rejected") or {}
+    if rej:
+        with st.expander("What the code rejected, and why"):
+            labels = {"cliff_before_hook": "Cliffhanger came before the hook",
+                      "too_long": "Longer than 60 seconds", "too_short": "Shorter than 20 seconds",
+                      "weak_cliffhanger": "Ending already resolved",
+                      "stitch_hook_already_continuous": "Stitch not needed, a continuous cut exists",
+                      "stitch_over_cap": "Over the stitched-clip limit"}
+            for k, v in rej.items():
+                st.markdown(f"- {labels.get(k, k)}: **{v}**")
+            st.caption("The model suggests moments. These rules decide which become promos.")
+
+
+# ---------------------------------------------------------------- pipeline run
+def extract_uploads(files, folder):
+    folder.mkdir(parents=True, exist_ok=True)
+    for f in files:
+        if f.name.lower().endswith(".zip"):
+            with zipfile.ZipFile(io.BytesIO(f.getvalue())) as z:
+                z.extractall(folder)
         else:
-            work = Path(tempfile.mkdtemp())
-            try:
-                script_dir = extract_uploads(files, work / "scripts")
-                llm.CACHE_DIR = work / "cache"
-                with st.spinner("Running…"):
-                    data, show = run_pipeline(script_dir, int(limit), int(seconds_between))
-                if data:
-                    st.session_state["result"] = data
-            finally:
-                shutil.rmtree(work, ignore_errors=True)
+            (folder / f.name).write_bytes(f.getvalue())
+    txt_dirs = {p.parent for p in folder.rglob("*.txt")}
+    return max(txt_dirs, key=lambda d: len(list(d.glob("*.txt")))) if txt_dirs else folder
 
-    if "result" in st.session_state:
-        st.divider()
-        show_results(st.session_state["result"])
+
+def run_pipeline(script_dir, limit, pause):
+    show = screenplay_parser.load_show(script_dir)
+    if limit:
+        show = show[:limit]
+    if not show:
+        st.error("No screenplay files found. Upload .txt episodes or a .zip that contains them.")
+        return None
+    candidates.SECONDS_BETWEEN_CALLS = pause
+    bar = st.progress(0.0, text=f"Read {len(show)} episodes. Finding hooks and cliffhangers…")
+    note = st.empty()
+    hooks, cliffs, failed = [], [], []
+    for i, ep in enumerate(show, 1):
+        note.caption(f"Episode {ep['episode']}")
+        try:
+            ans = candidates.call_llm_json(candidates.build_prompt(ep, compact=candidates.COMPACT),
+                                           system=candidates.EDITOR_SYSTEM)
+            kept, _ = candidates.validate_moments(ep, ans)
+            hooks += kept["hooks"]
+            cliffs += kept["cliffhangers"]
+        except Exception as e:
+            failed.append(ep["episode"])
+            note.warning(f"Episode {ep['episode']} skipped: {str(e)[:140]}")
+        bar.progress(i / len(show), text=f"{i} of {len(show)} episodes")
+    bar.empty(); note.empty()
+    if failed:
+        st.warning(f"{len(failed)} episode(s) were skipped: {failed}. On a free key this is usually "
+                   f"a rate limit; raise the pause or try again later.")
+    if not hooks or not cliffs:
+        st.error("No usable moments came back. Check the API key and model in the sidebar.")
+        return None
+    cands = {"hooks": hooks, "cliffhangers": cliffs, "provider": provider, "model": model}
+    built, rejected = promo_builder.build(show, cands)
+    return {"promos": built, "ranked": promo_builder.rank(built), "rejected": rejected,
+            "episodes": len(show)}
+
+
+# ---------------------------------------------------------------- upload panel (main action)
+key_done = bool(api_key)
+with st.container(border=True, key="upload_panel"):
+    st.markdown(f"""
+<span class="upload-anchor"></span>
+<div class="panel-head">
+  <h3>Find promos in your show</h3>
+  <div class="checks">
+    <span class="check ok"><i></i>Model: {esc(PROVIDERS[provider][0])}</span>
+    <span class="check {'ok' if key_done else 'todo'}"><i></i>{'API key added' if key_done else 'API key needed'}</span>
+  </div>
+</div>""", unsafe_allow_html=True)
+    files = st.file_uploader("Episode scripts (.zip or .txt)", type=["zip", "txt"],
+                             accept_multiple_files=True, label_visibility="collapsed",
+                             help="One .txt per episode with timestamped beats, e.g. Start: (00:11.30) | End: (00:13.10)")
+    c1, c2 = st.columns([1, 2.4], vertical_alignment="center")
+    go = c1.button("Find promos", type="primary", use_container_width=True,
+                   disabled=not (files and api_key))
+    if not key_done:
+        c2.markdown('<div class="hint">Choose a model and paste your API key in the left menu, '
+                    'then upload a .zip of episodes. Free keys work.</div>', unsafe_allow_html=True)
+    elif not files:
+        c2.markdown('<div class="hint">Upload a .zip of episodes, or individual .txt files. '
+                    f'The first {int(limit) or "all"} episodes will be processed '
+                    '(change this in the left menu).</div>', unsafe_allow_html=True)
+    else:
+        c2.markdown(f'<div class="hint">Ready. {len(files)} file(s) added.</div>', unsafe_allow_html=True)
+
+if go:
+    work = Path(tempfile.mkdtemp())
+    try:
+        llm.CACHE_DIR = work / "cache"
+        result = run_pipeline(extract_uploads(files, work / "scripts"), int(limit), int(pause))
+        if result:
+            st.session_state["result"] = result
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+# ---------------------------------------------------------------- results + explanation
+mine = st.session_state.get("result")
+tab_results, tab_how = st.tabs(["Your promos" if mine else "Example results", "How it works"])
+
+with tab_results:
+    if mine:
+        st.success("Done. Your promos are ranked below.")
+        show_results(mine)
+    else:
+        sample = load_sample()
+        if not sample:
+            st.markdown('<div class="empty"><b>Your ranked promos will appear here</b>'
+                        'Upload a show above to get started.</div>', unsafe_allow_html=True)
+        else:
+            st.caption(f"Example: a completed run on {sample.get('episodes', 'all')} episodes of one show "
+                       f"using {sample.get('model', 'the default model')}. Upload your own show above to "
+                       f"replace it.")
+            ranked = sorted((p for p in sample["promos"] if p.get("rank")), key=lambda p: p["rank"])
+            show_results({"promos": sample["promos"], "ranked": ranked,
+                          "rejected": sample.get("rejected_pairs", {}),
+                          "episodes": sample.get("episodes", "—")})
 
 with tab_how:
     st.markdown("""
-**The split: AI judges, code checks.**
+### AI judges, code checks
 
-1. **Parse (code).** Each screenplay becomes timestamped beats with IDs. The model never reads
-   or writes a timestamp, so it cannot invent one.
-2. **Find moments (AI).** Per episode, the model returns beat IDs for *hooks* (a clip could
-   start here) and *cliffhangers* (a clip could end here), with scores and what context a new
-   viewer would need.
-3. **Validate (code).** Beat IDs that don't exist are dropped. Scene transitions like
-   "cut to black" are rejected as cliffhangers.
-4. **Build (code).** Hooks pair with later cliffhangers into 20–60 s clips, snapped to camera-shot
-   boundaries so cuts are clean and the hook still lands in the first 3 seconds.
-5. **Rank (code).** Hook strength, how unresolved the ending is, whether a stranger would follow
-   it, and a preference for early episodes. Near-duplicates are removed and the shortlist is
-   spread across the show.
+**Read the scripts.** Every line, action and camera note becomes a numbered beat with exact
+timestamps. The AI never reads or writes a timestamp, so it cannot invent one.
 
-**A human stays in the loop:** the output is a shortlist for an editor to approve, not an
-auto-publisher.
+**Find the moments.** For each episode the AI marks where a promo could start (a slap, a reveal,
+a cruel line) and where it could cut (the beat right before an answer lands).
+
+**Check the picks.** Code drops any beat the AI made up and any "cut to black" transition.
+
+**Build the clips.** Code pairs hooks with later cliffhangers into 20 to 60 second clips,
+snapped to camera cuts so the hook still lands in the first 3 seconds.
+
+**Rank them.** Hook strength, how unresolved the ending feels, whether a new viewer would follow
+it, and a preference for early episodes, where new viewers start. Near-duplicates are removed
+and the shortlist is spread across the show.
+
+An editor approves the final list. This tool replaces watching every episode, not the editor.
 """)

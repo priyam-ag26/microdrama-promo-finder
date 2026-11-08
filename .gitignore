@@ -6,3 +6,5 @@ pack/
 __pycache__/
 *.pyc
 .DS_Store
+sample_results/all_promos.json
+.streamlit/secrets.toml

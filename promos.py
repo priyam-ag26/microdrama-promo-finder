@@ -88,6 +88,28 @@ def cliff_quality(cliff):
     return max(0.3, min(1.2, q))
 
 
+CATEGORIES = {
+    "Romance": {"romance", "love", "seduction", "kiss"},
+    "Action & danger": {"slap", "threat", "violence", "fight", "action", "danger", "attack"},
+    "Betrayal & revenge": {"betrayal", "humiliation", "accusation", "malicious", "revenge", "insult"},
+    "Mystery": {"reveal", "question", "mystery", "secret"},
+}
+TOP_FIXED = 5   # the first five are ranked purely by score; variety applies after them
+
+
+def category(hook, cliff):
+    """Viewer-facing theme for a promo, derived from what the AI already returned:
+    the hook's type, and whether the cliffhanger leaves a who/what/why question."""
+    t = str(hook.get("type", "")).lower().strip()
+    for name, types in CATEGORIES.items():
+        if t in types:
+            return name
+    q = str(cliff.get("open_question", "")).lower()
+    if q.startswith(("who", "what", "why", "where", "which")):
+        return "Mystery"
+    return "Other drama"
+
+
 def standalone_score(hook):
     """1.0 if the AI said a new viewer needs no context, lower the more backstory is needed."""
     ctx = str(hook.get("context_needed", "")).strip().lower()
@@ -127,6 +149,7 @@ def make_promo(hook, cliff, segments, n_eps, stitched):
         "why": f"Opens on {hook.get('type', 'a hook')} ({hook.get('why', '').rstrip('.')}); "
                f"cuts before the answer to: {cliff.get('open_question', '').rstrip('?')}?",
         "score": score(hook, cliff, n_eps, stitched),
+        "category": category(hook, cliff),
     }
 
 
@@ -215,18 +238,35 @@ def overlaps(a, b):
 
 
 def rank(promos):
+    """Top 5 purely by score. Then make sure every category in the show is represented,
+    then fill the rest by score. No duplicates, at most MAX_PER_EPISODE per episode."""
     pool = sorted(promos, key=lambda p: -p["score"])
     chosen, per_ep = [], {}
-    for p in pool:
-        first_ep = p["episodes"][0]
-        if per_ep.get(first_ep, 0) >= MAX_PER_EPISODE:
-            continue
-        if any(overlaps(p, q) for q in chosen):
-            continue
+
+    def can_add(p):
+        return per_ep.get(p["episodes"][0], 0) < MAX_PER_EPISODE and \
+            not any(overlaps(p, q) for q in chosen)
+
+    def add(p):
         chosen.append(p)
-        per_ep[first_ep] = per_ep.get(first_ep, 0) + 1
+        per_ep[p["episodes"][0]] = per_ep.get(p["episodes"][0], 0) + 1
+
+    for p in pool:                                   # 1) the fixed top five
+        if len(chosen) == TOP_FIXED:
+            break
+        if can_add(p):
+            add(p)
+    present = {p["category"] for p in pool}          # 2) one of each missing category
+    for cat in sorted(present - {p["category"] for p in chosen}):
+        best = next((p for p in pool if p["category"] == cat and p not in chosen and can_add(p)), None)
+        if best and len(chosen) < TOP_N:
+            add(best)
+    for p in pool:                                   # 3) fill the rest by score
         if len(chosen) == TOP_N:
             break
+        if p not in chosen and can_add(p):
+            add(p)
+    chosen = chosen[:TOP_FIXED] + sorted(chosen[TOP_FIXED:], key=lambda p: -p["score"])
     for i, p in enumerate(chosen, 1):
         p["rank"] = i
     return chosen
@@ -235,14 +275,20 @@ def rank(promos):
 def write_outputs(all_promos, ranked, rejected, cands):
     OUT.mkdir(exist_ok=True)
     (OUT / "all_promos.json").write_text(json.dumps(
-        {"count": len(all_promos), "rejected_pairs": rejected, "promos": all_promos}, indent=1))
+        {"provider": cands.get("provider"), "model": cands.get("model"),
+         "episodes": len({h["episode"] for h in cands["hooks"]} | {c["episode"] for c in cands["cliffhangers"]}),
+         "count": len(all_promos), "rejected_pairs": rejected,
+         "categories": {c: sum(p["category"] == c for p in all_promos)
+                        for c in sorted({p["category"] for p in all_promos})},
+         "model_by_episode": cands.get("model_by_episode", {}),
+         "promos": all_promos}, indent=1))
 
     with open(OUT / "ranked_promos.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["rank", "score", "type", "length_s", "segments", "hook", "cliffhanger", "why"])
+        w.writerow(["rank", "score", "category", "type", "length_s", "segments", "hook", "cliffhanger", "why"])
         for p in ranked:
             segs = " + ".join(f"Ep{s['episode']} {s['start']}-{s['end']}" for s in p["segments"])
-            w.writerow([p["rank"], p["score"], p["type"], p["length_s"], segs,
+            w.writerow([p["rank"], p["score"], p["category"], p["type"], p["length_s"], segs,
                         p["hook"], p["cliffhanger"], p["why"]])
 
     lines = [f"# Ranked promos ({cands.get('provider')}/{cands.get('model')})", "",
@@ -266,6 +312,9 @@ if __name__ == "__main__":
     n_stitch = sum(p["type"] == "stitched" for p in all_promos)
     print(f"Built {len(all_promos)} valid promos ({n_stitch} stitched). Rejected pairs: {rejected}")
     print(f"Top {len(ranked)} cover episodes: {sorted({p['episodes'][0] for p in ranked})}")
+    from collections import Counter
+    print("Categories (all promos):", dict(Counter(p["category"] for p in all_promos)))
+    print("Categories (shortlist): ", dict(Counter(p["category"] for p in ranked)))
     for p in ranked[:5]:
         segs = " + ".join(f"Ep{s['episode']} {s['start']}-{s['end']}" for s in p["segments"])
         print(f"#{p['rank']} [{p['score']}] {segs} ({p['length_s']}s)\n"

@@ -60,12 +60,16 @@ def _gemini(prompt, model, system):
     return r.json()["candidates"][0]["content"]["parts"][0]["text"]
 
 
+JSON_MODE = True   # ask the provider to enforce JSON; switched off for one retry if it fails
+
+
 def _openai_compatible(prompt, model, system, base_url, key_env):
     headers = {"Authorization": f"Bearer {os.environ[key_env]}"}
     messages = ([{"role": "system", "content": system}] if system else []) + \
                [{"role": "user", "content": prompt}]
-    body = {"model": model, "messages": messages, "temperature": 0.2,
-            "max_tokens": MAX_OUTPUT_TOKENS, "response_format": {"type": "json_object"}}
+    body = {"model": model, "messages": messages, "temperature": 0.2, "max_tokens": MAX_OUTPUT_TOKENS}
+    if JSON_MODE:
+        body["response_format"] = {"type": "json_object"}
     r = requests.post(f"{base_url}/chat/completions", json=body, headers=headers, timeout=TIMEOUT)
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"]
@@ -136,9 +140,19 @@ def call_llm(prompt, system=None, use_cache=True, max_retries=5):
                     err = e.response.json().get("error", {})
                 except ValueError:
                     err = {}
-                if err.get("code") == "json_validate_failed" and err.get("failed_generation"):
-                    text = err["failed_generation"]
-                    break
+                if err.get("code") == "json_validate_failed":
+                    if err.get("failed_generation"):
+                        text = err["failed_generation"]       # partial answer: salvage it
+                        break
+                    # empty answer: ask once more without the provider's JSON enforcement;
+                    # our own parser and validation still check the result
+                    global JSON_MODE
+                    JSON_MODE = False
+                    try:
+                        text = ADAPTERS[provider](prompt, model, system)
+                        break
+                    finally:
+                        JSON_MODE = True
             if code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
                 # Use the wait time the provider asks for, if it sends one
                 header = e.response.headers.get("retry-after") if e.response is not None else None
