@@ -36,7 +36,7 @@ LOGO = next((p for p in [HERE / "assets" / "logo.png", HERE / "assets" / "logo.s
              if p.exists()), None)
 
 PROVIDERS = {
-    "groq": ("Groq", ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]),
+    "groq": ("Groq", ["openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen/qwen3.8-27b"]),
     "gemini": ("Google Gemini", ["gemini-flash-latest", "gemini-3.5-flash", "gemini-flash-lite-latest"]),
     "openai": ("OpenAI", ["gpt-4o-mini", "gpt-4o"]),
     "anthropic": ("Anthropic", ["claude-sonnet-4-5", "claude-haiku-4-5"]),
