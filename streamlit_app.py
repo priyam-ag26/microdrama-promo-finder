@@ -87,6 +87,17 @@ html, body, [data-testid="stAppViewContainer"]{
 }
 [data-testid="stHeader"]{background:transparent;}
 #MainMenu, footer, [data-testid="stToolbar"], [data-testid="stDecoration"]{visibility:hidden;}
+/* the control that reopens a collapsed sidebar sits inside the hidden toolbar: keep it visible */
+[data-testid="stExpandSidebarButton"], [data-testid="stSidebarCollapsedControl"],
+[data-testid="collapsedControl"]{
+  visibility:visible !important; opacity:1 !important; z-index:1000;}
+[data-testid="stExpandSidebarButton"] button, [data-testid="stSidebarCollapsedControl"] button,
+[data-testid="collapsedControl"] button{
+  visibility:visible !important; background:var(--raised) !important;
+  border:1px solid rgba(227,34,44,.45) !important; border-radius:10px !important;
+  color:var(--text) !important;}
+[data-testid="stExpandSidebarButton"] svg, [data-testid="stSidebarCollapsedControl"] svg,
+[data-testid="collapsedControl"] svg{color:var(--text) !important; fill:var(--text) !important;}
 .block-container{padding-top:2.2rem; max-width:1180px;}
 h1,h2,h3, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3,
 [data-testid="stMarkdownContainer"] h1, [data-testid="stMarkdownContainer"] h2,
